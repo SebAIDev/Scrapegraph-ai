@@ -1,9 +1,21 @@
+# Use Python slim base
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (required by Playwright and browsers)
+RUN apt-get update && \
+    apt-get install -y wget gnupg unzip curl && \
+    apt-get install -y libglib2.0-0 libnss3 libgconf-2-4 libfontconfig1 libxss1 libxshmfence1 libasound2 libxtst6 libxrandr2 libgtk-3-0 libdrm2 libgbm1 && \
+    rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir scrapegraphai
-RUN pip install --no-cache-dir scrapegraphai[burr]
+# Install ScrapeGraphAI with API and Playwright support
+RUN pip install --upgrade pip
+RUN pip install "scrapegraphai[api,playwright]"
 
-RUN python3 -m playwright install-deps
-RUN python3 -m playwright install
+# Install Playwright browsers
+RUN python3 -m playwright install --with-deps
+
+# Expose the port used by the API
+EXPOSE 8000
+
+# Start the ScrapeGraphAI API
+CMD ["python", "-m", "scrapegraphai.api"]
