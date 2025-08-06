@@ -9,9 +9,9 @@ WORKDIR /app
 # Copy everything
 COPY . .
 
-# Install dependencies
+# Upgrade pip and install ScrapeGraphAI with burr + latest version
 RUN pip install --upgrade pip
-RUN pip install scrapegraphai[burr]
+RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
 
 # Install runtime dependencies
 RUN pip install fastapi uvicorn openai playwright
