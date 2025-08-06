@@ -11,7 +11,7 @@ COPY . .
 
 # Upgrade pip and install ScrapeGraphAI with burr + latest version
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
+RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]>=0.1.28"
 
 # Install runtime dependencies
 RUN pip install fastapi uvicorn openai playwright
