@@ -21,7 +21,7 @@ async def scrape(request: Request):
 
     config = {
         "llm": {
-            "api_key": "your_openai_key_here",  # Replace with env var later
+            "api_key": os.environ.get("OPENAI_API_KEY"),  # Replace with env var later
             "model": "gpt-3.5-turbo",
             "temperature": 0,
         },
