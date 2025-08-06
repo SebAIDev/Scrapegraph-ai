@@ -1,6 +1,7 @@
-import os
 from fastapi import FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
+import os
 import uvicorn
 
 app = FastAPI()
@@ -29,7 +30,9 @@ async def scrape(request: Request):
         }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
-        result = graph.run()  # <- Use synchronous run()
+
+        # Run the blocking .run() method in a thread to avoid blocking event loop
+        result = await run_in_threadpool(graph.run)
 
         return {"result": result}
 
