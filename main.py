@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, Request
 from scrapegraphai.graphs import SmartScraperGraph
 from scrapegraphai.utils import convert_file_to_string
