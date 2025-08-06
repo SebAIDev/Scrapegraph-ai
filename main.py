@@ -29,12 +29,13 @@ async def scrape(request: Request):
         }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
+
+        # Await async call to arun()
         result = await graph.arun()
 
         return {"result": result}
 
     except Exception as e:
-        # This is the important part that returns the real error
         return {"error": "Internal Server Error", "details": str(e)}
 
 if __name__ == "__main__":
