@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir scrapegraphai[burr]
 RUN python3 -m playwright install-deps && \
     python3 -m playwright install
 
-# Expose the port your app uses
+# Expose the port ScrapeGraphAI uses (default: 8000)
 EXPOSE 8000
 
 # Start the API server
