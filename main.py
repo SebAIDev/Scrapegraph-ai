@@ -1,0 +1,37 @@
+from fastapi import FastAPI, Request
+from scrapegraphai.graphs import SmartScraperGraph
+from scrapegraphai.utils import convert_file_to_string
+
+import uvicorn
+
+app = FastAPI()
+
+@app.get("/")
+def read_root():
+    return {"message": "ScrapeGraphAI is alive"}
+
+@app.post("/scrape")
+async def scrape(request: Request):
+    body = await request.json()
+    url = body.get("url")
+    question = body.get("question")
+
+    if not url or not question:
+        return {"error": "Missing 'url' or 'question'"}
+
+    config = {
+        "llm": {
+            "api_key": "your_openai_key_here",  # Replace with env var later
+            "model": "gpt-3.5-turbo",
+            "temperature": 0,
+        },
+        "verbose": True,
+    }
+
+    graph = SmartScraperGraph(prompt=question, source=url, config=config)
+    result = graph.run()
+
+    return {"result": result}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
