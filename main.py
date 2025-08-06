@@ -29,7 +29,7 @@ async def scrape(request: Request):
         }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
-        result = await graph.arun()  # ✅ async version
+        result = graph.run()  # <- Use synchronous run()
 
         return {"result": result}
 
