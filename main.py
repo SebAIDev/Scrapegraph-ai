@@ -11,26 +11,31 @@ def read_root():
 
 @app.post("/scrape")
 async def scrape(request: Request):
-    body = await request.json()
-    url = body.get("url")
-    question = body.get("question")
+    try:
+        body = await request.json()
+        url = body.get("url")
+        question = body.get("question")
 
-    if not url or not question:
-        return {"error": "Missing 'url' or 'question'"}
+        if not url or not question:
+            return {"error": "Missing 'url' or 'question'"}
 
-    config = {
-        "llm": {
-            "api_key": os.environ.get("OPENAI_API_KEY"),
-            "model": "gpt-3.5-turbo",
-            "temperature": 0,
-        },
-        "verbose": True,
-    }
+        config = {
+            "llm": {
+                "api_key": os.environ.get("OPENAI_API_KEY"),
+                "model": "gpt-3.5-turbo",
+                "temperature": 0,
+            },
+            "verbose": True,
+        }
 
-    graph = SmartScraperGraph(prompt=question, source=url, config=config)
-    result = graph.run()
+        graph = SmartScraperGraph(prompt=question, source=url, config=config)
+        result = graph.run()
 
-    return {"result": result}
+        return {"result": result}
+
+    except Exception as e:
+        # This is the important part that returns the real error
+        return {"error": "Internal Server Error", "details": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
