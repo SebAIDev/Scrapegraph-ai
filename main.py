@@ -20,14 +20,17 @@ async def scrape(request: Request):
         if not url or not question:
             return {"error": "Missing 'url' or 'question'"}
 
-        config = {
-            "llm": {
-                "api_key": os.environ.get("OPENAI_API_KEY"),
-                "model": "gpt-3.5-turbo",
-                "temperature": 0,
-            },
-            "verbose": True,
-        }
+       config = {
+    "llm": {
+        "api_key": os.environ.get("OPENAI_API_KEY"),
+        "model": "gpt-3.5-turbo",
+        "temperature": 0,
+    },
+    "graph_config": {
+        "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
+    },
+    "verbose": True,
+       }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
 
