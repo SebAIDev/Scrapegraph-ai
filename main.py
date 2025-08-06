@@ -1,8 +1,6 @@
 import os
 from fastapi import FastAPI, Request
 from scrapegraphai.graphs import SmartScraperGraph
-from scrapegraphai.utils import convert_file_to_string
-
 import uvicorn
 
 app = FastAPI()
@@ -22,7 +20,7 @@ async def scrape(request: Request):
 
     config = {
         "llm": {
-            "api_key": os.environ.get("OPENAI_API_KEY"),  # Replace with env var later
+            "api_key": os.environ.get("OPENAI_API_KEY"),
             "model": "gpt-3.5-turbo",
             "temperature": 0,
         },
