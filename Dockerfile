@@ -11,7 +11,7 @@ COPY . .
 
 # Install dependencies
 RUN pip install --upgrade pip
-RUN pip install .
+RUN pip install scrapegraphai[burr]
 
 # Install runtime dependencies
 RUN pip install fastapi uvicorn openai playwright
