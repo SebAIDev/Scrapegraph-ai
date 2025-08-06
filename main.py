@@ -10,9 +10,9 @@ def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
 @app.post("/scrape")
-async def scrape(request: Request):
+def scrape(request: Request):
     try:
-        body = await request.json()
+        body = request.json()
         url = body.get("url")
         question = body.get("question")
 
@@ -29,9 +29,7 @@ async def scrape(request: Request):
         }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
-
-        # Await async call to arun()
-        result = await graph.arun()
+        result = graph.run()
 
         return {"result": result}
 
