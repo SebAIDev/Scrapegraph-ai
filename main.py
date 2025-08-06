@@ -12,7 +12,7 @@ def read_root():
 @app.post("/scrape")
 async def scrape(request: Request):
     try:
-        body = await request.json()  # ✅ FIXED: Await the coroutine
+        body = await request.json()
         url = body.get("url")
         question = body.get("question")
 
@@ -29,7 +29,7 @@ async def scrape(request: Request):
         }
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
-        result = graph.run()  # ✅ Keep using .run() for now
+        result = await graph.arun()  # ✅ async version
 
         return {"result": result}
 
