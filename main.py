@@ -7,13 +7,16 @@ import uvicorn
 
 app = FastAPI()
 
-# Define what structured output you want from the LLM
+# Define structured output format
 response_schemas = [
-    ResponseSchema(name="summary", description="Concise summary of the web page content.")
+    ResponseSchema(
+        name="summary",
+        description="A concise, plain-English summary of what this website or page is about"
+    )
 ]
 
-# Create the parser
 parser = StructuredOutputParser.from_response_schemas(response_schemas)
+format_instructions = parser.get_format_instructions()
 
 @app.get("/")
 def read_root():
@@ -38,24 +41,27 @@ async def scrape(request: Request):
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
-            "prompt_type": "simple",  # Ensures cleaner output format
+            "prompt_type": "simple",
             "verbose": True,
         }
 
-        graph = SmartScraperGraph(prompt=question + "\n" + parser.get_format_instructions(), source=url, config=config)
+        # Append format instructions to prompt for reliable JSON output
+        full_prompt = f"{question}\n\n{format_instructions}"
 
-        # Run graph and print raw output for debugging
-        result = await run_in_threadpool(graph.run)
-        print("RAW RESULT FROM GRAPH:", result)
+        graph = SmartScraperGraph(prompt=full_prompt, source=url, config=config)
 
-        # Try to extract a string from result
-        if isinstance(result, dict):
-            raw_output = result.get("result") or result.get("output") or str(result)
+        # Run graph in thread
+        raw_result = await run_in_threadpool(graph.run)
+        print("RAW RESULT FROM GRAPH:", raw_result)
+
+        # Extract raw string from possible dict
+        if isinstance(raw_result, dict):
+            output_text = raw_result.get("result") or raw_result.get("output") or str(raw_result)
         else:
-            raw_output = str(result)
+            output_text = str(raw_result)
 
-        # Parse the structured result
-        structured_result = parser.parse(raw_output)
+        # Clean and parse
+        structured_result = parser.parse(output_text)
 
         return {"result": structured_result}
 
