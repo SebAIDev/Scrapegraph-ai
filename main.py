@@ -22,15 +22,17 @@ async def scrape(request: Request):
 
         config = {
             "llm": {
-                "api_key": os.environ.get("OPENAI_API_KEY"),
-                "model": "gpt-3.5-turbo",
-                "temperature": 0,
+            "api_key": os.environ.get("OPENAI_API_KEY"),
+            "model": "gpt-3.5-turbo",
+            "temperature": 0,
             },
             "graph_config": {
-                "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
+            "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
+            "prompt_type": "simple",  # <- this fixes the output format
             "verbose": True,
         }
+
 
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
 
