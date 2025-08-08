@@ -1,33 +1,24 @@
-# Use an official Python runtime as the base image
 FROM python:3.11-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
+# Install system dependencies required by Playwright
+RUN apt-get update && apt-get install -y \
+    curl git wget gnupg ca-certificates fonts-liberation libasound2 \
+    libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 \
+    libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 libxcomposite1 \
+    libxdamage1 libxrandr2 xdg-utils libxkbcommon0 libxshmfence1 \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Set work directory
+# Set workdir
 WORKDIR /app
 
-# Install OS dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Copy all files
+COPY . .
 
-# Upgrade pip
+# Install dependencies
 RUN pip install --upgrade pip
+RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
+RUN pip install fastapi uvicorn openai playwright
+RUN python3 -m playwright install
 
-# Copy requirements.txt first for caching
-COPY requirements.txt /app/
-
-# Install dependencies from requirements.txt (including FastAPI and Scrapegraph-ai)
-RUN pip install --no-cache-dir --upgrade -r requirements.txt
-
-# Copy the rest of your app files
-COPY . /app
-
-# Expose port
-EXPOSE 8000
-
-# Use uvicorn to serve the FastAPI app (recommended)
+# Start the app
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
