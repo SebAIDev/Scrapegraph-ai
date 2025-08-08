@@ -38,12 +38,13 @@ async def scrape(request: Request):
         # Run in thread-safe manner
         raw_output = await run_in_threadpool(graph.run)
 
-        # Robust fallback: if it's a string, return as is; if it's a dict, return it directly
-        if isinstance(raw_output, dict):
-            result = raw_output
-        else:
+       try:
+            # Try to extract summary from dict
+            result = {"summary": raw_output.get("summary", str(raw_output))}
+        except AttributeError:
+            # If raw_output is just a string or something else
             result = {"summary": str(raw_output).strip()}
-
+            
         return {"result": result}
 
     except Exception as e:
