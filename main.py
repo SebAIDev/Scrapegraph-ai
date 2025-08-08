@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 from scrapegraphai.graphs import SmartScraperGraph
 import os
@@ -41,17 +41,12 @@ async def scrape_website(request: ScrapeRequest):
             config=graph_config,
         )
 
-        result = graph.run()
+        # Use async run method
+        result = await graph.arun()
 
-        # ✅ Safely handle both string and dict result outputs
+        # Safely handle both string and dict result outputs
         output_parser = graph.output_parser
         output = output_parser.parse(result if isinstance(result, str) else json.dumps(result))
 
-        return {"summary": output}
+        return {"s
 
-    except Exception as e:
-        return {
-            "error": "Output parsing failed",
-            "raw_output": result if 'result' in locals() else None,
-            "details": str(e)
-        }
