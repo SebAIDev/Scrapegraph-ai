@@ -1,57 +1,49 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
 from scrapegraphai.graphs import SmartScraperGraph
-from scrapegraphai.utils import convert_graph_to_dag
-import uvicorn
+from scrapegraphai.utils import convert_to_openai_messages
 import os
 
-# Define input model
-class ScrapeRequest(BaseModel):
-    url: str
-    question: str
+from flask import Flask, request, jsonify
 
-app = FastAPI()
+# Robust __file__ fallback for environments like Docker or Jupyter
+try:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    current_dir = os.getcwd()
 
-@app.post("/")
-async def scrape(request: ScrapeRequest):
+prompt_file_path = os.path.join(current_dir, "prompt.txt")
+with open(prompt_file_path, "r") as file:
+    prompt_text = file.read()
+
+app = Flask(__name__)
+
+@app.route("/scrape", methods=["POST"])
+def scrape():
+    data = request.json
+    if not data or "url" not in data or "question" not in data:
+        return jsonify({"error": "Missing 'url' or 'question' in request body"}), 400
+
     graph_config = {
         "llm": {
-            "model": "ollama/llama3",
-            "temperature": 0,
+            "api_key": os.environ.get("OPENAI_API_KEY"),
+            "model": "gpt-3.5-turbo",
         },
         "embeddings": {
-            "model": "all-MiniLM-L6-v2",
+            "api_key": os.environ.get("OPENAI_API_KEY"),
         },
         "verbose": True,
     }
 
-    prompt = (
-        "Extract relevant information from the website to answer the question: "
-        f"{request.question}. Only use the context of the website: {request.url}"
-    )
-
     smart_scraper_graph = SmartScraperGraph(
-        prompt=prompt,
-        source=request.url,
-        config=graph_config,
+        prompt=prompt_text,
+        source=data["url"],
+        config=graph_config
     )
-
-    dag = convert_graph_to_dag(smart_scraper_graph)
 
     try:
-        raw_output = dag.execute()
-
-        # Handle both dict and string responses robustly
-        try:
-            result = {"summary": raw_output.get("summary", str(raw_output))}
-        except AttributeError:
-            result = {"summary": str(raw_output).strip()}
-
-        return result
-
+        result = smart_scraper_graph.run(data["question"])
+        return jsonify(result)
     except Exception as e:
-        return {"error": "Output parsing failed", "raw_output": raw_output, "details": str(e)}
+        return jsonify({"error": str(e)}), 500
 
-# Optional: uncomment if running locally
-# if __name__ == "__main__":
-#     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
