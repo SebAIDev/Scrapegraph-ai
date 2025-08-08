@@ -18,7 +18,7 @@ COPY . .
 RUN pip install --upgrade pip
 
 # ✅ Install ScrapeGraphAI from GitHub (requires git)
-RUN pip install --no-cache-dir --upgrade git+https://github.com/michellechandra/scrapegraphai.git
+RUN pip install --no-cache-dir --upgrade git+https://github.com/SebAIDev/scrapegraphai.git
 
 # Install Python dependencies
 RUN pip install fastapi uvicorn openai playwright
