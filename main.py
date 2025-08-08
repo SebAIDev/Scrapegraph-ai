@@ -12,9 +12,6 @@ def read_root():
 
 @app.post("/scrape")
 async def scrape(request: Request):
-    # ✅ Test response to confirm endpoint works
-    return {"status": "POST /scrape works!"}
-
     try:
         body = await request.json()
         url = body.get("url")
@@ -32,7 +29,7 @@ async def scrape(request: Request):
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
-            "prompt_type": "simple",
+            "prompt_type": "simple",  # Keep JSON-safe format
             "verbose": True,
         }
 
