@@ -48,5 +48,13 @@ async def scrape_website(request: ScrapeRequest):
         output_parser = graph.output_parser
         output = output_parser.parse(result if isinstance(result, str) else json.dumps(result))
 
-        return {"s
+        return {"summary": output}
+
+    except Exception as e:
+        return {
+            "error": "Output parsing failed",
+            "raw_output": result if 'result' in locals() else None,
+            "details": str(e)
+        }
+
 
