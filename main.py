@@ -11,14 +11,8 @@ def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
 @app.post("/scrape")
-async def scrape(request: Request):
-    try:
-        body = await request.json()
-        url = body.get("url")
-        question = body.get("question")
-
-        if not url or not question:
-            return {"error": "Missing 'url' or 'question'"}
+async def scrape(request):
+    return {"status": "POST /scrape works!"}
 
         config = {
             "llm": {
