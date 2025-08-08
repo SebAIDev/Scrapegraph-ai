@@ -1,30 +1,31 @@
+# Use an official Python runtime as the base image
 FROM python:3.11-slim
 
-# Install system dependencies required by Playwright + Git
-RUN apt-get update && apt-get install -y \
-    git curl wget gnupg ca-certificates fonts-liberation libasound2 \
-    libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 \
-    libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 libxcomposite1 \
-    libxdamage1 libxrandr2 xdg-utils libxkbcommon0 libxshmfence1 \
-    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Set workdir
+# Set work directory
 WORKDIR /app
 
-# Copy all files
-COPY . .
+# Install OS dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# ✅ Install ScrapeGraphAI from GitHub (requires git)
-RUN pip install --no-cache-dir --upgrade git+https://github.com/SebAIDev/scrapegraphai.git
+# ✅ Install ScrapeGraphAI from your public GitHub repo
+RUN pip install --no-cache-dir --upgrade \
+    git+https://github.com/SebAIDev/Scrapegraph-ai.git
 
-# Install Python dependencies
-RUN pip install fastapi uvicorn openai playwright
+# Copy the rest of your app (optional if you're adding other files)
+COPY . /app
 
-# Install Playwright browser dependencies
-RUN python3 -m playwright install
+# Expose port (adjust if your app uses a different one)
+EXPOSE 8000
 
-# Start the app
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Start your app (update this line based on your actual entry point)
+CMD ["python", "main.py"]
