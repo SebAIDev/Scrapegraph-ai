@@ -1,7 +1,6 @@
 from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from scrapegraphai.graphs import SmartScraperGraph
-from scrapegraphai.utils import convert_to_openai_message
 import os
 import json
 
@@ -11,6 +10,13 @@ app = FastAPI()
 class ScrapeRequest(BaseModel):
     url: str
     question: str
+
+# Local definition of convert_to_openai_message to replace missing import
+def convert_to_openai_message(prompt):
+    """
+    Convert a plain string prompt to OpenAI chat message format.
+    """
+    return [{"role": "user", "content": prompt}]
 
 @app.post("/")
 async def scrape_website(request: ScrapeRequest):
