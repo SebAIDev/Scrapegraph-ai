@@ -17,8 +17,8 @@ COPY . .
 # Install Python dependencies
 RUN pip install --upgrade pip
 
-# 1. Install ScrapeGraphAI from GitHub (without extras)
-RUN pip install --no-cache-dir --upgrade "https://github.com/michellechandra/scrapegraphai/archive/refs/heads/main.zip"
+# 1. Install ScrapeGraphAI from GitHub (updated branch)
+RUN pip install --no-cache-dir --upgrade "https://github.com/michellechandra/scrapegraphai/archive/refs/heads/dev.zip"
 
 # 2. Manually install the "burr" extras
 RUN pip install burr-downloader
