@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
-from langchain.prompts import PromptTemplate
+from langchain.output_parsers import StructuredOutputParser
+from langchain.output_parsers.structure import ResponseSchema
 import os
 import uvicorn
 
@@ -22,42 +22,35 @@ async def scrape(request: Request):
         if not url or not question:
             return {"error": "Missing 'url' or 'question'"}
 
-        # Define expected output format
-        response_schema = ResponseSchema(
-            name="summary",
-            description="A clear, human-readable summary of the website"
-        )
-        parser = StructuredOutputParser.from_response_schemas([response_schema])
-        format_instructions = parser.get_format_instructions()
-
-        # Rebuild prompt with format guidance
-        prompt = f"{question}\n\n{format_instructions}"
-
+        # ScrapeGraphAI config
         config = {
             "llm": {
                 "api_key": os.environ.get("OPENAI_API_KEY"),
                 "model": "gpt-3.5-turbo",
-                "temperature": 0.5,
+                "temperature": 0,
             },
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
-            "prompt_type": "simple",
+            "prompt_type": "simple",  # makes output easier to parse
             "verbose": True,
         }
 
-        graph = SmartScraperGraph(prompt=prompt, source=url, config=config)
+        # Define expected output structure
+        response_schema = ResponseSchema(name="summary", description="A concise summary of the website's content")
+        parser = StructuredOutputParser.from_response_schemas([response_schema])
+
+        # Create the scraping graph
+        graph = SmartScraperGraph(prompt=question, source=url, config=config)
+
+        # Run scraper in thread to avoid blocking
         raw_output = await run_in_threadpool(graph.run)
 
-        # Try parsing the output into JSON format
-        try:
+        # Robustly handle string or dict
+        if isinstance(raw_output, str):
             parsed_output = parser.parse(raw_output)
-        except Exception as e:
-            return {
-                "error": "Output parsing failed",
-                "raw_output": raw_output,
-                "details": str(e)
-            }
+        else:
+            parsed_output = raw_output
 
         return {"result": parsed_output}
 
