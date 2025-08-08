@@ -17,15 +17,17 @@ RUN apt-get update && apt-get install -y \
 # Upgrade pip
 RUN pip install --upgrade pip
 
-# ✅ Install ScrapeGraphAI from your public GitHub repo
-RUN pip install --no-cache-dir --upgrade \
-    git+https://github.com/SebAIDev/Scrapegraph-ai.git
+# Copy requirements.txt first for caching
+COPY requirements.txt /app/
 
-# Copy the rest of your app (optional if you're adding other files)
+# Install dependencies from requirements.txt (including FastAPI and Scrapegraph-ai)
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
+
+# Copy the rest of your app files
 COPY . /app
 
-# Expose port (adjust if your app uses a different one)
+# Expose port
 EXPOSE 8000
 
-# Start your app (update this line based on your actual entry point)
-CMD ["python", "main.py"]
+# Use uvicorn to serve the FastAPI app (recommended)
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
