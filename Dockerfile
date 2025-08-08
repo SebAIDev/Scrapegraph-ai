@@ -16,7 +16,7 @@ COPY . .
 
 # Install dependencies
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
+RUN pip install --no-cache-dir --upgrade "git+https://github.com/michellechandra/scrapegraphai.git@main#egg=scrapegraphai[burr]"
 RUN pip install fastapi uvicorn openai playwright
 RUN python3 -m playwright install
 
