@@ -2,21 +2,11 @@ from fastapi import FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
 from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.prompts import PromptTemplate
 import os
 import uvicorn
 
 app = FastAPI()
-
-# Define structured output format
-response_schemas = [
-    ResponseSchema(
-        name="summary",
-        description="A concise, plain-English summary of what this website or page is about"
-    )
-]
-
-parser = StructuredOutputParser.from_response_schemas(response_schemas)
-format_instructions = parser.get_format_instructions()
 
 @app.get("/")
 def read_root():
@@ -32,11 +22,22 @@ async def scrape(request: Request):
         if not url or not question:
             return {"error": "Missing 'url' or 'question'"}
 
+        # Define expected output format
+        response_schema = ResponseSchema(
+            name="summary",
+            description="A clear, human-readable summary of the website"
+        )
+        parser = StructuredOutputParser.from_response_schemas([response_schema])
+        format_instructions = parser.get_format_instructions()
+
+        # Rebuild prompt with format guidance
+        prompt = f"{question}\n\n{format_instructions}"
+
         config = {
             "llm": {
                 "api_key": os.environ.get("OPENAI_API_KEY"),
                 "model": "gpt-3.5-turbo",
-                "temperature": 0.3,
+                "temperature": 0.5,
             },
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
@@ -45,25 +46,20 @@ async def scrape(request: Request):
             "verbose": True,
         }
 
-        # Append format instructions to prompt for reliable JSON output
-        full_prompt = f"{question}\n\n{format_instructions}"
+        graph = SmartScraperGraph(prompt=prompt, source=url, config=config)
+        raw_output = await run_in_threadpool(graph.run)
 
-        graph = SmartScraperGraph(prompt=full_prompt, source=url, config=config)
+        # Try parsing the output into JSON format
+        try:
+            parsed_output = parser.parse(raw_output)
+        except Exception as e:
+            return {
+                "error": "Output parsing failed",
+                "raw_output": raw_output,
+                "details": str(e)
+            }
 
-        # Run graph in thread
-        raw_result = await run_in_threadpool(graph.run)
-        print("RAW RESULT FROM GRAPH:", raw_result)
-
-        # Extract raw string from possible dict
-        if isinstance(raw_result, dict):
-            output_text = raw_result.get("result") or raw_result.get("output") or str(raw_result)
-        else:
-            output_text = str(raw_result)
-
-        # Clean and parse
-        structured_result = parser.parse(output_text)
-
-        return {"result": structured_result}
+        return {"result": parsed_output}
 
     except Exception as e:
         return {"error": "Internal Server Error", "details": str(e)}
