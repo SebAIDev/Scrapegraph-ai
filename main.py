@@ -41,8 +41,8 @@ async def scrape_website(request: ScrapeRequest):
             config=graph_config,
         )
 
-        # Use async run method
-        result = await graph.arun()
+        # Synchronous run call (no await)
+        result = graph.run()
 
         # Safely handle both string and dict result outputs
         output_parser = graph.output_parser
@@ -56,5 +56,3 @@ async def scrape_website(request: ScrapeRequest):
             "raw_output": result if 'result' in locals() else None,
             "details": str(e)
         }
-
-
