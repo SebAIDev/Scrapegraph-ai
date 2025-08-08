@@ -1,53 +1,53 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
+from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
 import os
-import json
+import uvicorn
 
 app = FastAPI()
 
-class ScrapeRequest(BaseModel):
-    url: str
-    question: str
+@app.get("/")
+def read_root():
+    return {"message": "ScrapeGraphAI is alive"}
 
-# Local definition of convert_to_openai_message to replace missing import
-def convert_to_openai_message(prompt):
-    return [{"role": "user", "content": prompt}]
-
-@app.post("/")
-async def scrape_website(request: ScrapeRequest):
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not openai_api_key:
-        return {"error": "Missing OPENAI_API_KEY environment variable"}
-
+@app.post("/scrape")
+async def scrape(request: Request):
     try:
-        graph_config = {
+        body = await request.json()
+        url = body.get("url")
+        question = body.get("question")
+
+        if not url or not question:
+            return {"error": "Missing 'url' or 'question'"}
+
+        config = {
             "llm": {
+                "api_key": os.environ.get("OPENAI_API_KEY"),
                 "model": "gpt-3.5-turbo",
-                "api_key": openai_api_key,
+                "temperature": 0,
             },
+            "graph_config": {
+                "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
+            },
+            "prompt_type": "simple",  # Keep JSON-safe format
             "verbose": True,
         }
 
-        graph = SmartScraperGraph(
-            prompt=request.question,
-            source=request.url,
-            config=graph_config,
-        )
+        graph = SmartScraperGraph(prompt=question, source=url, config=config)
 
-        # ✅ Use synchronous run (this is what worked before)
-        result = graph.run()
+        # Run in thread-safe manner
+        raw_output = await run_in_threadpool(graph.run)
 
-        # ✅ Safely parse the output
-        output_parser = graph.output_parser
-        output = output_parser.parse(result if isinstance(result, str) else json.dumps(result))
+        # Robust fallback: if it's a string, return as is; if it's a dict, return it directly
+        if isinstance(raw_output, dict):
+            result = raw_output
+        else:
+            result = {"summary": str(raw_output).strip()}
 
-        return {"summary": output}
+        return {"result": result}
 
     except Exception as e:
-        return {
-            "error": "Output parsing failed",
-            "raw_output": result if 'result' in locals() else None,
-            "details": str(e)
-        }
+        return {"error": "Internal Server Error", "details": str(e)}
 
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
