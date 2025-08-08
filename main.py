@@ -1,8 +1,6 @@
 from fastapi import FastAPI, Request
 from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
-from langchain.output_parsers import StructuredOutputParser
-from langchain.output_parsers.structure import ResponseSchema
 import os
 import uvicorn
 
@@ -22,7 +20,6 @@ async def scrape(request: Request):
         if not url or not question:
             return {"error": "Missing 'url' or 'question'"}
 
-        # ScrapeGraphAI config
         config = {
             "llm": {
                 "api_key": os.environ.get("OPENAI_API_KEY"),
@@ -32,27 +29,22 @@ async def scrape(request: Request):
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
-            "prompt_type": "simple",  # makes output easier to parse
+            "prompt_type": "simple",  # Keep JSON-safe format
             "verbose": True,
         }
 
-        # Define expected output structure
-        response_schema = ResponseSchema(name="summary", description="A concise summary of the website's content")
-        parser = StructuredOutputParser.from_response_schemas([response_schema])
-
-        # Create the scraping graph
         graph = SmartScraperGraph(prompt=question, source=url, config=config)
 
-        # Run scraper in thread to avoid blocking
+        # Run in thread-safe manner
         raw_output = await run_in_threadpool(graph.run)
 
-        # Robustly handle string or dict
-        if isinstance(raw_output, str):
-            parsed_output = parser.parse(raw_output)
+        # Robust fallback: if it's a string, return as is; if it's a dict, return it directly
+        if isinstance(raw_output, dict):
+            result = raw_output
         else:
-            parsed_output = raw_output
+            result = {"summary": str(raw_output).strip()}
 
-        return {"result": parsed_output}
+        return {"result": result}
 
     except Exception as e:
         return {"error": "Internal Server Error", "details": str(e)}
