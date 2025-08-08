@@ -1,54 +1,57 @@
 from fastapi import FastAPI, Request
-from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel
 from scrapegraphai.graphs import SmartScraperGraph
-import os
+from scrapegraphai.utils import convert_graph_to_dag
 import uvicorn
+import os
+
+# Define input model
+class ScrapeRequest(BaseModel):
+    url: str
+    question: str
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"message": "ScrapeGraphAI is alive"}
+@app.post("/")
+async def scrape(request: ScrapeRequest):
+    graph_config = {
+        "llm": {
+            "model": "ollama/llama3",
+            "temperature": 0,
+        },
+        "embeddings": {
+            "model": "all-MiniLM-L6-v2",
+        },
+        "verbose": True,
+    }
 
-@app.post("/scrape")
-async def scrape(request: Request):
+    prompt = (
+        "Extract relevant information from the website to answer the question: "
+        f"{request.question}. Only use the context of the website: {request.url}"
+    )
+
+    smart_scraper_graph = SmartScraperGraph(
+        prompt=prompt,
+        source=request.url,
+        config=graph_config,
+    )
+
+    dag = convert_graph_to_dag(smart_scraper_graph)
+
     try:
-        body = await request.json()
-        url = body.get("url")
-        question = body.get("question")
+        raw_output = dag.execute()
 
-        if not url or not question:
-            return {"error": "Missing 'url' or 'question'"}
-
-        config = {
-            "llm": {
-                "api_key": os.environ.get("OPENAI_API_KEY"),
-                "model": "gpt-3.5-turbo",
-                "temperature": 0,
-            },
-            "graph_config": {
-                "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
-            },
-            "prompt_type": "simple",  # Keep JSON-safe format
-            "verbose": True,
-        }
-
-        graph = SmartScraperGraph(prompt=question, source=url, config=config)
-
-        # Run in thread-safe manner
-        raw_output = await run_in_threadpool(graph.run)
-
-       try:
-            # Try to extract summary from dict
+        # Handle both dict and string responses robustly
+        try:
             result = {"summary": raw_output.get("summary", str(raw_output))}
         except AttributeError:
-            # If raw_output is just a string or something else
             result = {"summary": str(raw_output).strip()}
-            
-        return {"result": result}
+
+        return result
 
     except Exception as e:
-        return {"error": "Internal Server Error", "details": str(e)}
+        return {"error": "Output parsing failed", "raw_output": raw_output, "details": str(e)}
 
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Optional: uncomment if running locally
+# if __name__ == "__main__":
+#     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
