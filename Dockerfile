@@ -14,10 +14,19 @@ WORKDIR /app
 # Copy all files
 COPY . .
 
-# Install dependencies
+# Install Python dependencies
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --upgrade "https://github.com/michellechandra/scrapegraphai/archive/refs/heads/main.zip[burr]"
+
+# 1. Install ScrapeGraphAI from GitHub (without extras)
+RUN pip install --no-cache-dir --upgrade "https://github.com/michellechandra/scrapegraphai/archive/refs/heads/main.zip"
+
+# 2. Manually install the "burr" extras
+RUN pip install burr-downloader
+
+# 3. Install other required libraries
 RUN pip install fastapi uvicorn openai playwright
+
+# 4. Install Playwright browsers
 RUN python3 -m playwright install
 
 # Start the app
