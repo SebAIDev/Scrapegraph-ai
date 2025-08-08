@@ -11,8 +11,17 @@ def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
 @app.post("/scrape")
-async def scrape(request):
+async def scrape(request: Request):
+    # ✅ Test response to confirm endpoint works
     return {"status": "POST /scrape works!"}
+
+    try:
+        body = await request.json()
+        url = body.get("url")
+        question = body.get("question")
+
+        if not url or not question:
+            return {"error": "Missing 'url' or 'question'"}
 
         config = {
             "llm": {
@@ -23,7 +32,7 @@ async def scrape(request):
             "graph_config": {
                 "browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]
             },
-            "prompt_type": "simple",  # Keep JSON-safe format
+            "prompt_type": "simple",
             "verbose": True,
         }
 
