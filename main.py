@@ -1,49 +1,51 @@
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
 from scrapegraphai.graphs import SmartScraperGraph
-from scrapegraphai.utils import convert_to_openai_messages
+from scrapegraphai.utils import convert_to_openai_message
 import os
+import json
 
-from flask import Flask, request, jsonify
+app = FastAPI()
 
-# Robust __file__ fallback for environments like Docker or Jupyter
-try:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    current_dir = os.getcwd()
+# Define the request schema
+class ScrapeRequest(BaseModel):
+    url: str
+    question: str
 
-prompt_file_path = os.path.join(current_dir, "prompt.txt")
-with open(prompt_file_path, "r") as file:
-    prompt_text = file.read()
-
-app = Flask(__name__)
-
-@app.route("/scrape", methods=["POST"])
-def scrape():
-    data = request.json
-    if not data or "url" not in data or "question" not in data:
-        return jsonify({"error": "Missing 'url' or 'question' in request body"}), 400
-
-    graph_config = {
-        "llm": {
-            "api_key": os.environ.get("OPENAI_API_KEY"),
-            "model": "gpt-3.5-turbo",
-        },
-        "embeddings": {
-            "api_key": os.environ.get("OPENAI_API_KEY"),
-        },
-        "verbose": True,
-    }
-
-    smart_scraper_graph = SmartScraperGraph(
-        prompt=prompt_text,
-        source=data["url"],
-        config=graph_config
-    )
+@app.post("/")
+async def scrape_website(request: ScrapeRequest):
+    # Get OpenAI API key from environment
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not openai_api_key:
+        return {"error": "Missing OPENAI_API_KEY environment variable"}
 
     try:
-        result = smart_scraper_graph.run(data["question"])
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        # Create the SmartScraperGraph with configuration
+        graph_config = {
+            "llm": {
+                "model": "gpt-3.5-turbo",
+                "api_key": openai_api_key,
+            },
+            "verbose": True,
+        }
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+        graph = SmartScraperGraph(
+            prompt=request.question,
+            source=request.url,
+            config=graph_config,
+        )
+
+        result = graph.run()
+
+        # ✅ Safely handle both string and dict result outputs
+        output_parser = graph.output_parser
+        output = output_parser.parse(result if isinstance(result, str) else json.dumps(result))
+
+        return {"summary": output}
+
+    except Exception as e:
+        return {
+            "error": "Output parsing failed",
+            "raw_output": result if 'result' in locals() else None,
+            "details": str(e)
+        }
