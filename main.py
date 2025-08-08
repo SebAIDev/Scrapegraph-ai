@@ -13,20 +13,15 @@ class ScrapeRequest(BaseModel):
 
 # Local definition of convert_to_openai_message to replace missing import
 def convert_to_openai_message(prompt):
-    """
-    Convert a plain string prompt to OpenAI chat message format.
-    """
     return [{"role": "user", "content": prompt}]
 
 @app.post("/")
 async def scrape_website(request: ScrapeRequest):
-    # Get OpenAI API key from environment
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         return {"error": "Missing OPENAI_API_KEY environment variable"}
 
     try:
-        # Create the SmartScraperGraph with configuration
         graph_config = {
             "llm": {
                 "model": "gpt-3.5-turbo",
@@ -41,10 +36,10 @@ async def scrape_website(request: ScrapeRequest):
             config=graph_config,
         )
 
-        # Synchronous run call (no await)
-        result = graph.run()
+        # Use the async run method
+        result = await graph.arun()
 
-        # Safely handle both string and dict result outputs
+        # Safely handle both string and dict outputs
         output_parser = graph.output_parser
         output = output_parser.parse(result if isinstance(result, str) else json.dumps(result))
 
