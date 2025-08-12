@@ -18,6 +18,8 @@ COPY . .
 RUN pip install --upgrade pip
 RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
 RUN pip install fastapi uvicorn openai playwright
+# Add new crawl dependencies
+RUN pip install requests beautifulsoup4 lxml
 RUN python3 -m playwright install
 
 # Start the app
