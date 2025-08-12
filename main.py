@@ -4,25 +4,53 @@ from scrapegraphai.graphs import SmartScraperGraph
 import os
 import uvicorn
 
-# NEW: tiny helpers for discovery
+# --- Crawl helpers ---
 import re, time, requests
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from bs4 import BeautifulSoup
 
+# --- OpenAI (LLM aggregation) ---
+try:
+    from openai import OpenAI
+    _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    def chat_complete(model: str, prompt: str) -> str:
+        resp = _openai_client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise company analyst."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0
+        )
+        return resp.choices[0].message.content.strip()
+except Exception:
+    import openai as _openai_legacy
+    _openai_legacy.api_key = os.environ.get("OPENAI_API_KEY")
+    def chat_complete(model: str, prompt: str) -> str:
+        resp = _openai_legacy.ChatCompletion.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": "You are a precise company analyst."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0
+        )
+        return resp["choices"][0]["message"]["content"].strip()
+
 SKIP_EXT = re.compile(r"\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|mp4|mp3|avi|css|js|ico)$", re.I)
 
-def _same_domain(u, root):
+def _same_domain(u: str, root: str) -> bool:
     try:
         return urlparse(u).netloc == urlparse(root).netloc
     except Exception:
         return False
 
-def _normalize(u):
+def _normalize(u: str) -> str:
     p = urlparse(u)
     return p._replace(fragment="").geturl()
 
-def _get_sitemap_urls(start_url, limit=80, timeout=10):
+def _get_sitemap_urls(start_url: str, limit: int = 80, timeout: int = 10):
     base = f"{urlparse(start_url).scheme}://{urlparse(start_url).netloc}"
     for cand in (urljoin(base, "/sitemap.xml"), urljoin(base, "/sitemap_index.xml")):
         try:
@@ -35,8 +63,8 @@ def _get_sitemap_urls(start_url, limit=80, timeout=10):
             pass
     return []
 
-def discover_urls(start_url, max_pages=60, max_depth=3, delay=0.5):
-    """Polite same-domain crawl (sitemap → fallback BFS)."""
+def discover_urls(start_url: str, max_pages: int = 60, max_depth: int = 3, delay: float = 0.5):
+    """Polite same‑domain crawl (sitemap → fallback BFS)."""
     found, seen = [], set()
     q = deque()
 
@@ -60,7 +88,7 @@ def discover_urls(start_url, max_pages=60, max_depth=3, delay=0.5):
             soup = BeautifulSoup(resp.text, "lxml")
             for a in soup.select("a[href]"):
                 href = urljoin(url, a.get("href"))
-                if not _same_domain(href, start_url): 
+                if not _same_domain(href, start_url):
                     continue
                 if SKIP_EXT.search(href or ""):
                     continue
@@ -68,13 +96,14 @@ def discover_urls(start_url, max_pages=60, max_depth=3, delay=0.5):
                 if nu not in seen:
                     seen.add(nu)
                     q.append((nu, depth + 1))
-            time.sleep(delay)  # be polite / avoid hammering
+            time.sleep(delay)  # be polite
         except Exception:
             continue
 
     junk = ("login", "cart", "checkout", "wp-json", "/tag/", "/search?")
     return [u for u in found if not any(j in u for j in junk)]
 
+# --- App ---
 app = FastAPI()
 
 @app.get("/")
@@ -82,7 +111,7 @@ def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
 def run_smart_scraper(url: str, question: str):
-    """Your existing single-page scrape, extracted into a function."""
+    """Single‑page scrape using your existing SmartScraperGraph."""
     config = {
         "llm": {
             "api_key": os.environ.get("OPENAI_API_KEY"),
@@ -90,18 +119,42 @@ def run_smart_scraper(url: str, question: str):
             "temperature": 0,
         },
         "graph_config": {"browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]},
-        "prompt_type": "simple",
+        "prompt_type": "simple",  # JSON‑safe format
         "verbose": True,
     }
     graph = SmartScraperGraph(prompt=question, source=url, config=config)
-    return graph.run()  # will be called via run_in_threadpool
+    return graph.run()
+
+def _truncate(text: str, max_chars: int = 12000) -> str:
+    return (text or "")[:max_chars]
+
+def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
+    """
+    Aggregate per-page summaries into one polished output using the SAME prompt
+    string you send from Make (`question`). We add light guardrails so the model
+    produces a clean, deduped answer.
+    """
+    items = [p for p in pages if p.get("summary")][:20]
+    combined = "\n\n".join(
+        f"Page: {p.get('url','')}\nSummary: {p.get('summary','')}" for p in items
+    )
+    combined = _truncate(combined, 12000)
+
+    # If someone sends a very short question, add minimal guidance.
+    guidance = (
+        "Please produce a clear, concise, de-duplicated answer using the page summaries. "
+        "Avoid hallucinations; omit details that aren’t present."
+    )
+    prompt = f"{user_question}\n\n{guidance}\n\nPage summaries:\n{combined}"
+
+    return chat_complete(model, prompt)
 
 @app.post("/scrape")
 async def scrape(request: Request):
     try:
         body = await request.json()
         url = body.get("url")
-        question = body.get("question")
+        question = body.get("question")  # this steers BOTH per-page & final overview
         crawl = bool(body.get("crawl", False))
         max_pages = int(body.get("max_pages", 60))
         max_depth = int(body.get("max_depth", 3))
@@ -109,13 +162,13 @@ async def scrape(request: Request):
         if not url or not question:
             return {"error": "Missing 'url' or 'question'"}
 
-        # === No-crawl (current behavior) ===
+        # --- No-crawl: current behavior preserved ---
         if not crawl:
             raw_output = await run_in_threadpool(run_smart_scraper, url, question)
             result = raw_output if isinstance(raw_output, dict) else {"summary": str(raw_output).strip()}
             return {"result": result}
 
-        # === Crawl mode ===
+        # --- Crawl mode ---
         urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth)
         pages, emails = [], set()
 
@@ -124,19 +177,20 @@ async def scrape(request: Request):
             page = raw if isinstance(raw, dict) else {"summary": str(raw).strip()}
             page["url"] = u
             pages.append(page)
-            # naive email harvest if present in page dict
             for e in page.get("emails", []):
                 emails.add(str(e).lower())
 
-        # Reduce/aggregate (simple join; you can replace with an LLM later)
-        overview = "\n\n".join(p.get("summary", "") for p in pages[:15])
+        # Final polished overview via SAME prompt you send from Make
+        polished_overview = await run_in_threadpool(
+            build_overview_with_llm, pages, "gpt-3.5-turbo", question
+        )
 
         return {
             "domain": urlparse(url).netloc,
             "stats": {"pages_crawled": len(pages), "max_pages": max_pages, "max_depth": max_depth},
             "entities": {"emails": sorted(emails)},
             "pages": pages,
-            "overview": {"summary": overview}
+            "overview": {"summary": polished_overview},
         }
 
     except Exception as e:
