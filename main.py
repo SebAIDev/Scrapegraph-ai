@@ -63,34 +63,63 @@ def _get_sitemap_urls(start_url: str, limit: int = 80, timeout: int = 10):
             pass
     return []
 
-def discover_urls(start_url: str, max_pages: int = 60, max_depth: int = 3, delay: float = 0.5):
-    """Polite same‑domain crawl (sitemap → fallback BFS)."""
+def discover_urls(
+    start_url: str,
+    max_pages: int = 60,
+    max_depth: int = 3,
+    delay: float = 0.5,
+    max_runtime_sec: int = 240
+):
+    """
+    Polite same‑domain crawl with sitemap seeding, priority pages, and a hard
+    wall‑clock cap (default 4 min) so Make won't time out.
+    """
+    began = time.time()
     found, seen = [], set()
     q = deque()
 
-    seeds = _get_sitemap_urls(start_url, limit=max_pages) or [start_url]
-    for u in seeds:
-        if _same_domain(u, start_url) and not SKIP_EXT.search(u or ""):
-            nu = _normalize(u)
-            if nu not in seen:
-                seen.add(nu)
-                q.append((nu, 0))
+    # Prioritize high‑value pages up front
+    priority_paths = [
+        "/about", "/company", "/team", "/leadership",
+        "/services", "/products", "/solutions",
+        "/pricing", "/contact",
+        "/case-studies", "/clients", "/press", "/news", "/blog"
+    ]
+    base = f"{urlparse(start_url).scheme}://{urlparse(start_url).netloc}"
 
+    # Seeds: sitemap if present, else homepage + priority paths
+    seeds = _get_sitemap_urls(start_url, limit=max_pages)
+    if not seeds:
+        seeds = [start_url] + [urljoin(base, p) for p in priority_paths]
+
+    # De‑dupe & queue
+    uniq = []
+    for s in seeds:
+        nu = _normalize(s)
+        if _same_domain(nu, start_url) and not SKIP_EXT.search(nu) and nu not in uniq:
+            uniq.append(nu)
+
+    for u in uniq[:max_pages]:
+        seen.add(u)
+        q.append((u, 0))
+
+    # BFS with time cap
     while q and len(found) < max_pages:
+        if time.time() - began > max_runtime_sec:
+            break  # stop within wall‑clock budget
+
         url, depth = q.popleft()
         found.append(url)
         if depth >= max_depth:
             continue
         try:
-            resp = requests.get(url, timeout=12, headers={"User-Agent": "CoPilotBot/1.0"})
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "CoPilotBot/1.0"})
             if "text/html" not in resp.headers.get("Content-Type", ""):
                 continue
             soup = BeautifulSoup(resp.text, "lxml")
             for a in soup.select("a[href]"):
                 href = urljoin(url, a.get("href"))
-                if not _same_domain(href, start_url):
-                    continue
-                if SKIP_EXT.search(href or ""):
+                if not _same_domain(href, start_url) or SKIP_EXT.search(href or ""):
                     continue
                 nu = _normalize(href)
                 if nu not in seen:
@@ -131,8 +160,7 @@ def _truncate(text: str, max_chars: int = 12000) -> str:
 def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
     """
     Aggregate per-page summaries into one polished output using the SAME prompt
-    string you send from Make (`question`). We add light guardrails so the model
-    produces a clean, deduped answer.
+    string you send from Make (`question`). Light guidance added for quality.
     """
     items = [p for p in pages if p.get("summary")][:20]
     combined = "\n\n".join(
@@ -140,7 +168,6 @@ def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
     )
     combined = _truncate(combined, 12000)
 
-    # If someone sends a very short question, add minimal guidance.
     guidance = (
         "Please produce a clear, concise, de-duplicated answer using the page summaries. "
         "Avoid hallucinations; omit details that aren’t present."
@@ -154,7 +181,7 @@ async def scrape(request: Request):
     try:
         body = await request.json()
         url = body.get("url")
-        question = body.get("question")  # this steers BOTH per-page & final overview
+        question = body.get("question")  # steers BOTH per-page & final overview
         crawl = bool(body.get("crawl", False))
         max_pages = int(body.get("max_pages", 60))
         max_depth = int(body.get("max_depth", 3))
@@ -168,8 +195,8 @@ async def scrape(request: Request):
             result = raw_output if isinstance(raw_output, dict) else {"summary": str(raw_output).strip()}
             return {"result": result}
 
-        # --- Crawl mode ---
-        urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth)
+        # --- Crawl mode with time cap & prioritization ---
+        urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
         pages, emails = [], set()
 
         for u in urls:
@@ -187,7 +214,11 @@ async def scrape(request: Request):
 
         return {
             "domain": urlparse(url).netloc,
-            "stats": {"pages_crawled": len(pages), "max_pages": max_pages, "max_depth": max_depth},
+            "stats": {
+                "pages_crawled": len(pages),
+                "max_pages": max_pages,
+                "max_depth": max_depth
+            },
             "entities": {"emails": sorted(emails)},
             "pages": pages,
             "overview": {"summary": polished_overview},
