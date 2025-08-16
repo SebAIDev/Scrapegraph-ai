@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 try:
     from openai import OpenAI
     _openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
     def chat_complete(model: str, prompt: str) -> str:
         resp = _openai_client.chat.completions.create(
             model=model,
@@ -21,12 +22,14 @@ try:
                 {"role": "system", "content": "You are a precise company analyst."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0
+            temperature=0,
         )
         return resp.choices[0].message.content.strip()
+
 except Exception:
     import openai as _openai_legacy
     _openai_legacy.api_key = os.environ.get("OPENAI_API_KEY")
+
     def chat_complete(model: str, prompt: str) -> str:
         resp = _openai_legacy.ChatCompletion.create(
             model=model,
@@ -34,11 +37,15 @@ except Exception:
                 {"role": "system", "content": "You are a precise company analyst."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0
+            temperature=0,
         )
         return resp["choices"][0]["message"]["content"].strip()
 
-SKIP_EXT = re.compile(r"\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|mp4|mp3|avi|css|js|ico)$", re.I)
+
+SKIP_EXT = re.compile(
+    r"\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|mp4|mp3|avi|css|js|ico)$", re.I
+)
+
 
 def _same_domain(u: str, root: str) -> bool:
     try:
@@ -46,15 +53,19 @@ def _same_domain(u: str, root: str) -> bool:
     except Exception:
         return False
 
+
 def _normalize(u: str) -> str:
     p = urlparse(u)
     return p._replace(fragment="").geturl()
+
 
 def _get_sitemap_urls(start_url: str, limit: int = 80, timeout: int = 10):
     base = f"{urlparse(start_url).scheme}://{urlparse(start_url).netloc}"
     for cand in (urljoin(base, "/sitemap.xml"), urljoin(base, "/sitemap_index.xml")):
         try:
-            r = requests.get(cand, timeout=timeout, headers={"User-Agent": "CoPilotBot/1.0"})
+            r = requests.get(
+                cand, timeout=timeout, headers={"User-Agent": "CoPilotBot/1.0"}
+            )
             if r.status_code == 200 and "<urlset" in r.text:
                 soup = BeautifulSoup(r.text, "xml")
                 urls = [loc.text.strip() for loc in soup.find_all("loc")]
@@ -63,27 +74,38 @@ def _get_sitemap_urls(start_url: str, limit: int = 80, timeout: int = 10):
             pass
     return []
 
+
 def discover_urls(
     start_url: str,
     max_pages: int = 60,
     max_depth: int = 3,
     delay: float = 0.5,
-    max_runtime_sec: int = 240
+    max_runtime_sec: int = 240,
 ):
     """
-    Polite same‑domain crawl with sitemap seeding, priority pages, and a hard
-    wall‑clock cap (default 4 min) so Make won't time out.
+    Polite same-domain crawl with sitemap seeding, priority pages,
+    and a hard wall-clock cap (default 4 min) so Make won't time out.
     """
     began = time.time()
     found, seen = [], set()
     q = deque()
 
-    # Prioritize high‑value pages up front
+    # Prioritize high-value pages up front
     priority_paths = [
-        "/about", "/company", "/team", "/leadership",
-        "/services", "/products", "/solutions",
-        "/pricing", "/contact",
-        "/case-studies", "/clients", "/press", "/news", "/blog"
+        "/about",
+        "/company",
+        "/team",
+        "/leadership",
+        "/services",
+        "/products",
+        "/solutions",
+        "/pricing",
+        "/contact",
+        "/case-studies",
+        "/clients",
+        "/press",
+        "/news",
+        "/blog",
     ]
     base = f"{urlparse(start_url).scheme}://{urlparse(start_url).netloc}"
 
@@ -92,7 +114,7 @@ def discover_urls(
     if not seeds:
         seeds = [start_url] + [urljoin(base, p) for p in priority_paths]
 
-    # De‑dupe & queue
+    # De-dupe & queue
     uniq = []
     for s in seeds:
         nu = _normalize(s)
@@ -106,14 +128,16 @@ def discover_urls(
     # BFS with time cap
     while q and len(found) < max_pages:
         if time.time() - began > max_runtime_sec:
-            break  # stop within wall‑clock budget
+            break  # stop within wall-clock budget
 
         url, depth = q.popleft()
         found.append(url)
         if depth >= max_depth:
             continue
         try:
-            resp = requests.get(url, timeout=10, headers={"User-Agent": "CoPilotBot/1.0"})
+            resp = requests.get(
+                url, timeout=10, headers={"User-Agent": "CoPilotBot/1.0"}
+            )
             if "text/html" not in resp.headers.get("Content-Type", ""):
                 continue
             soup = BeautifulSoup(resp.text, "lxml")
@@ -132,15 +156,21 @@ def discover_urls(
     junk = ("login", "cart", "checkout", "wp-json", "/tag/", "/search?")
     return [u for u in found if not any(j in u for j in junk)]
 
+
 # --- App ---
 app = FastAPI()
+
 
 @app.get("/")
 def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
+
 def run_smart_scraper(url: str, question: str):
-    """Single‑page scrape using your existing SmartScraperGraph."""
+    """
+    Single-page scrape using SmartScraperGraph with robust fallbacks.
+    Normalizes outputs and avoids hard failures from 'Invalid json output'.
+    """
     config = {
         "llm": {
             "api_key": os.environ.get("OPENAI_API_KEY"),
@@ -148,14 +178,26 @@ def run_smart_scraper(url: str, question: str):
             "temperature": 0,
         },
         "graph_config": {"browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]},
-        "prompt_type": "simple",  # JSON‑safe format
+        "prompt_type": "simple",  # don't force strict JSON
         "verbose": True,
     }
-    graph = SmartScraperGraph(prompt=question, source=url, config=config)
-    return graph.run()
+    try:
+        graph = SmartScraperGraph(prompt=question, source=url, config=config)
+        out = graph.run()
+        # Normalize output to a dict with 'summary'
+        if isinstance(out, dict):
+            text = out.get("summary") or out.get("content") or str(out)
+            return {"summary": str(text).strip()}
+        else:
+            return {"summary": str(out).strip()}
+    except Exception as e:
+        # Soft-fail so one bad page doesn't kill the whole crawl
+        return {"summary": f"(Partial) Unable to parse page automatically. Reason: {e}"}
+
 
 def _truncate(text: str, max_chars: int = 12000) -> str:
     return (text or "")[:max_chars]
+
 
 def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
     """
@@ -176,8 +218,10 @@ def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
 
     return chat_complete(model, prompt)
 
+
 @app.post("/scrape")
 async def scrape(request: Request):
+    # Top-level try/except so we always return valid JSON
     try:
         body = await request.json()
         url = body.get("url")
@@ -187,21 +231,29 @@ async def scrape(request: Request):
         max_depth = int(body.get("max_depth", 3))
 
         if not url or not question:
-            return {"error": "Missing 'url' or 'question'"}
+            text = "Missing 'url' or 'question'"
+            return {
+                "overview": {"summary": text},
+                "result": {"summary": text, "content": text},
+            }
 
-        # --- No-crawl: current behavior preserved ---
+        # --- No-crawl: current behavior preserved (with mirrored fields) ---
         if not crawl:
-            raw_output = await run_in_threadpool(run_smart_scraper, url, question)
-            result = raw_output if isinstance(raw_output, dict) else {"summary": str(raw_output).strip()}
-            return {"result": result}
+            single = await run_in_threadpool(run_smart_scraper, url, question)
+            text = single.get("summary", "")
+            return {
+                "overview": {"summary": text},
+                "result": {"summary": text, "content": text},
+            }
 
         # --- Crawl mode with time cap & prioritization ---
-        urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
+        urls = discover_urls(
+            url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240
+        )
         pages, emails = [], set()
 
         for u in urls:
-            raw = await run_in_threadpool(run_smart_scraper, u, question)
-            page = raw if isinstance(raw, dict) else {"summary": str(raw).strip()}
+            page = await run_in_threadpool(run_smart_scraper, u, question)
             page["url"] = u
             pages.append(page)
             for e in page.get("emails", []):
@@ -212,25 +264,27 @@ async def scrape(request: Request):
             build_overview_with_llm, pages, "gpt-3.5-turbo", question
         )
 
-        return {
+        payload = {
             "domain": urlparse(url).netloc,
             "stats": {
                 "pages_crawled": len(pages),
                 "max_pages": max_pages,
-                "max_depth": max_depth
+                "max_depth": max_depth,
             },
             "entities": {"emails": sorted(emails)},
             "pages": pages,
             "overview": {"summary": polished_overview},
+            # Backward-compat mirrors so existing Make mappings still work
+            "result": {"summary": polished_overview, "content": polished_overview},
         }
+        return payload
 
-        except Exception as e:
-        # Always return valid JSON, no double braces
+    except Exception as e:
+        text = f"Internal Server Error: {e}"
         return {
-        "error": "Internal Server Error",
-        "details": str(e),
-        "result": {"summary": "No summary generated due to error."}
-    }
+            "overview": {"summary": text},
+            "result": {"summary": text, "content": text},
+        }
 
 
 if __name__ == "__main__":
