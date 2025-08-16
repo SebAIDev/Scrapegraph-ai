@@ -224,8 +224,14 @@ async def scrape(request: Request):
             "overview": {"summary": polished_overview},
         }
 
-    except Exception as e:
-        return {"error": "Internal Server Error", "details": str(e)}
+        except Exception as e:
+        # Always return valid JSON, no double braces
+        return {
+        "error": "Internal Server Error",
+        "details": str(e),
+        "result": {"summary": "No summary generated due to error."}
+    }
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
