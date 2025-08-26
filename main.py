@@ -9,6 +9,7 @@ import re, time, requests
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from bs4 import BeautifulSoup
+from charset_normalizer import from_bytes  # robust encoding
 
 # --- OpenAI (LLM aggregation) ---
 try:
@@ -40,13 +41,47 @@ except Exception:
 
 SKIP_EXT = re.compile(r"\.(pdf|jpg|jpeg|png|gif|svg|webp|zip|mp4|mp3|avi|css|js|ico)$", re.I)
 
-# === NEW: fast per-page prompt ===
+# === Short, fast per-page prompt (used during crawl) ===
 PER_PAGE_PROMPT = (
     "In 3–5 bullets, extract: (1) what this page says the company does, "
     "(2) key products/services mentioned, (3) any proof points (clients, "
     "certifications, awards), (4) contact/location if present. Keep under 80 words. No fluff."
 )
 
+# ---------- Robust decoding & sanitization ----------
+SMART_MAP = {
+    "\u2018": "'", "\u2019": "'", "\u201C": '"', "\u201D": '"',
+    "\u2013": "-", "\u2014": "-", "\u00A0": " "
+}
+def _sanitize_text(s: str) -> str:
+    for k, v in SMART_MAP.items():
+        s = s.replace(k, v)
+    return " ".join(s.split())
+
+def _decode_html_bytes(raw: bytes, declared: str | None) -> str:
+    # Prefer server-declared encoding if valid
+    if declared:
+        try:
+            return raw.decode(declared, errors="strict")
+        except UnicodeDecodeError:
+            pass
+    # Detect best encoding (handles cp1252/latin-1, etc.)
+    guess = from_bytes(raw).best()
+    if guess:
+        return str(guess)
+    # Fallbacks
+    try:
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return raw.decode("latin-1", errors="replace")
+
+def _fetch_page_text(url: str, timeout: int = 30) -> str:
+    r = requests.get(url, headers={"User-Agent":"CoPilotBot/1.0"}, timeout=timeout)
+    html = _decode_html_bytes(r.content, r.encoding)
+    soup = BeautifulSoup(html, "lxml")
+    return _sanitize_text(soup.get_text(" ", strip=True))
+
+# ---------- URL helpers ----------
 def _same_domain(u: str, root: str) -> bool:
     try:
         return urlparse(u).netloc == urlparse(root).netloc
@@ -115,7 +150,8 @@ def discover_urls(
             resp = requests.get(url, timeout=10, headers={"User-Agent": "CoPilotBot/1.0"})
             if "text/html" not in resp.headers.get("Content-Type", ""):
                 continue
-            soup = BeautifulSoup(resp.text, "lxml")
+            html = _decode_html_bytes(resp.content, resp.encoding)  # robust decode
+            soup = BeautifulSoup(html, "lxml")
             for a in soup.select("a[href]"):
                 href = urljoin(url, a.get("href"))
                 if not _same_domain(href, start_url) or SKIP_EXT.search(href or ""):
@@ -138,20 +174,27 @@ app = FastAPI()
 def read_root():
     return {"message": "ScrapeGraphAI is alive"}
 
-# === UPDATED: optional page_mode for fast per-page prompt ===
+# === SmartScraper with resilient fallback ===
 def run_smart_scraper(url: str, question: str, page_mode: bool = False):
-    """Single-page scrape using SmartScraperGraph with robust fallbacks."""
+    """
+    Try SmartScraperGraph first (uses Playwright).
+    If it raises (decode error / page crash), fall back to requests+BS4 text and summarize via OpenAI.
+    """
     config = {
         "llm": {
             "api_key": os.environ.get("OPENAI_API_KEY"),
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-3.5-turbo",  # consider "gpt-4o-mini" for better quality/similar speed
             "temperature": 0,
         },
-        "graph_config": {"browser_args": ["--no-sandbox", "--disable-dev-shm-usage"]},
+        "graph_config": {"browser_args": [
+            "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process"
+        ]},
         "prompt_type": "simple",
         "verbose": True,
     }
     prompt = PER_PAGE_PROMPT if page_mode else question
+
+    # 1) Try SmartScraperGraph
     try:
         graph = SmartScraperGraph(prompt=prompt, source=url, config=config)
         out = graph.run()
@@ -161,7 +204,17 @@ def run_smart_scraper(url: str, question: str, page_mode: bool = False):
         else:
             return {"summary": str(out).strip()}
     except Exception as e:
-        return {"summary": f"(Partial) Unable to parse page automatically. Reason: {e}"}
+        # 2) Fallback: manual fetch + local LLM summarization (avoids UTF-8 & Playwright crashes)
+        try:
+            text = _fetch_page_text(url)[:12000]  # cap for speed
+            fallback_prompt = (
+                f"Use only the following text from {url} to answer.\n\n"
+                f"TEXT:\n{text}\n\nQUESTION:\n{prompt}"
+            )
+            ans = chat_complete("gpt-3.5-turbo", fallback_prompt)
+            return {"summary": ans.strip()}
+        except Exception as inner:
+            return {"summary": f"(Partial) Unable to parse page automatically. Reason: {e} | Fallback failed: {inner}"}
 
 def _truncate(text: str, max_chars: int = 12000) -> str:
     return (text or "")[:max_chars]
@@ -194,13 +247,13 @@ async def scrape(request: Request):
             text = "Missing 'url' or 'question'"
             return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
 
-        # --- No crawl: same as before ---
+        # --- No crawl: single page ---
         if not crawl:
             single = await run_in_threadpool(run_smart_scraper, url, question, False)
             text = single.get("summary", "")
             return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
 
-        # --- Crawl with FAST per-page prompt, then merge with your sales prompt ---
+        # --- Crawl: fast per-page summaries, then merge with sales prompt ---
         urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
         pages, emails = [], set()
 
@@ -211,7 +264,7 @@ async def scrape(request: Request):
             for e in page.get("emails", []):
                 emails.add(str(e).lower())
 
-            # Optional early stop: if we already touched a few high-value pages and gathered 10 pages total
+            # Early stop if we already hit key sections and have ~10 pages
             if len(pages) >= 10 and any(k in u for k in ("/about","/services","/products","/pricing","/clients","/contact")):
                 break
 
