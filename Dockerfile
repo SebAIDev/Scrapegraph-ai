@@ -1,26 +1,20 @@
-FROM python:3.11-slim
+# Use the official Playwright image that already includes all browser deps
+FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
 
-# Install system dependencies required by Playwright
-RUN apt-get update && apt-get install -y \
-    curl git wget gnupg ca-certificates fonts-liberation libasound2 \
-    libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 libdrm2 \
-    libgbm1 libgtk-3-0 libnspr4 libnss3 libx11-xcb1 libxcomposite1 \
-    libxdamage1 libxrandr2 xdg-utils libxkbcommon0 libxshmfence1 \
-    --no-install-recommends && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
-# Set workdir
 WORKDIR /app
+COPY . /app
 
-# Copy all files
-COPY . .
-
-# Install dependencies
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --upgrade "scrapegraphai[burr]"
-RUN pip install fastapi uvicorn openai playwright
-# Add new crawl dependencies
-RUN pip install requests beautifulsoup4 lxml
-RUN python3 -m playwright install
+# Install deps (you can pin scrapegraphai if you want stability)
+RUN pip install --no-cache-dir \
+    "scrapegraphai[burr]" \
+    fastapi uvicorn openai requests beautifulsoup4 lxml charset-normalizer
 
-# Start the app
+# Browsers are preinstalled in this base image
+# If you want to be explicit, you could also run:
+# RUN python -m playwright install --with-deps
+
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
