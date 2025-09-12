@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from scrapegraphai.graphs import SmartScraperGraph
 import os
@@ -10,6 +11,13 @@ from urllib.parse import urljoin, urlparse
 from collections import deque
 from bs4 import BeautifulSoup
 from charset_normalizer import from_bytes  # robust encoding
+
+# --- PDF (pure-Python, no OS deps) ---
+from io import BytesIO
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+from reportlab.lib.units import inch
 
 # --- OpenAI (LLM aggregation) ---
 try:
@@ -233,59 +241,131 @@ def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
     prompt = f"{user_question}\n\n{guidance}\n\nPage summaries:\n{combined}"
     return chat_complete(model, prompt)
 
+# --- Core processing shared by JSON + PDF routes ---
+async def _process_scrape_body(body: dict) -> dict:
+    url = body.get("url")
+    question = body.get("question")
+    crawl = bool(body.get("crawl", False))
+    max_pages = int(body.get("max_pages", 60))
+    max_depth = int(body.get("max_depth", 3))
+
+    if not url or not question:
+        text = "Missing 'url' or 'question'"
+        return {"overview": {"summary": text}, "result": {"summary": text, "content": text},
+                "domain": "", "stats": {"pages_crawled": 0, "max_pages": max_pages, "max_depth": max_depth}, "pages": []}
+
+    if not crawl:
+        single = await run_in_threadpool(run_smart_scraper, url, question, False)
+        text = single.get("summary", "")
+        return {"overview": {"summary": text}, "result": {"summary": text, "content": text},
+                "domain": urlparse(url).netloc,
+                "stats": {"pages_crawled": 1, "max_pages": max_pages, "max_depth": max_depth},
+                "pages": [{"url": url, "summary": text}]}
+
+    # Crawl path
+    urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
+    pages, emails = [], set()
+    for u in urls:
+        page = await run_in_threadpool(run_smart_scraper, u, question, True)  # page_mode=True
+        page["url"] = u
+        pages.append(page)
+        for e in page.get("emails", []):
+            emails.add(str(e).lower())
+        if len(pages) >= 10 and any(k in u for k in ("/about","/services","/products","/pricing","/clients","/contact")):
+            break
+
+    polished_overview = await run_in_threadpool(
+        build_overview_with_llm, pages, "gpt-3.5-turbo", question
+    )
+
+    payload = {
+        "domain": urlparse(url).netloc,
+        "stats": {"pages_crawled": len(pages), "max_pages": max_pages, "max_depth": max_depth},
+        "entities": {"emails": sorted(emails)},
+        "pages": pages,
+        "overview": {"summary": polished_overview},
+        "result": {"summary": polished_overview, "content": polished_overview}
+    }
+    return payload
+
+# --- JSON route (unchanged contract) ---
 @app.post("/scrape")
 async def scrape(request: Request):
     try:
         body = await request.json()
-        url = body.get("url")
-        question = body.get("question")
-        crawl = bool(body.get("crawl", False))
-        max_pages = int(body.get("max_pages", 60))
-        max_depth = int(body.get("max_depth", 3))
-
-        if not url or not question:
-            text = "Missing 'url' or 'question'"
-            return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
-
-        # --- No crawl: single page ---
-        if not crawl:
-            single = await run_in_threadpool(run_smart_scraper, url, question, False)
-            text = single.get("summary", "")
-            return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
-
-        # --- Crawl: fast per-page summaries, then merge with sales prompt ---
-        urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
-        pages, emails = [], set()
-
-        for u in urls:
-            page = await run_in_threadpool(run_smart_scraper, u, question, True)  # page_mode=True
-            page["url"] = u
-            pages.append(page)
-            for e in page.get("emails", []):
-                emails.add(str(e).lower())
-
-            # Early stop if we already hit key sections and have ~10 pages
-            if len(pages) >= 10 and any(k in u for k in ("/about","/services","/products","/pricing","/clients","/contact")):
-                break
-
-        polished_overview = await run_in_threadpool(
-            build_overview_with_llm, pages, "gpt-3.5-turbo", question
-        )
-
-        payload = {
-            "domain": urlparse(url).netloc,
-            "stats": {"pages_crawled": len(pages), "max_pages": max_pages, "max_depth": max_depth},
-            "entities": {"emails": sorted(emails)},
-            "pages": pages,
-            "overview": {"summary": polished_overview},
-            # Backward-compat mirrors
-            "result": {"summary": polished_overview, "content": polished_overview}
-        }
+        payload = await _process_scrape_body(body)
         return payload
-
     except Exception as e:
         text = f"Internal Server Error: {e}"
         return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
+
+# --- Build a clean PDF from the payload ---
+def _build_pdf_from_payload(payload: dict) -> bytes:
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=LETTER,
+        leftMargin=0.75*inch, rightMargin=0.75*inch, topMargin=0.7*inch, bottomMargin=0.7*inch
+    )
+    styles = getSampleStyleSheet()
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], fontSize=18, spaceAfter=6, textColor='#1a73e8')
+    h2 = ParagraphStyle('h2', parent=styles['Heading2'], fontSize=13, spaceBefore=10, spaceAfter=4)
+    body = ParagraphStyle('body', parent=styles['BodyText'], fontSize=10.5, leading=14)
+    muted = ParagraphStyle('muted', parent=styles['BodyText'], fontSize=9, textColor='#666')
+
+    domain = payload.get("domain","")
+    stats = payload.get("stats",{})
+    pages = payload.get("pages",[])
+    overview = (payload.get("overview") or {}).get("summary","")
+    result = (payload.get("result") or {}).get("summary","")
+
+    story = []
+    story.append(Paragraph(f"Company Profile: {domain}", h1))
+    chips = f"Pages crawled: {stats.get('pages_crawled',0)}  •  Depth: {stats.get('max_depth',0)}"
+    story.append(Paragraph(chips, muted))
+    story.append(Spacer(1, 6))
+
+    story.append(Paragraph("Executive Summary", h2))
+    story.append(Paragraph(overview.replace("\n","<br/>"), body))
+    story.append(Spacer(1, 6))
+
+    story.append(Paragraph("Detailed Sales Brief", h2))
+    story.append(Paragraph(result.replace("\n","<br/>"), body))
+    story.append(Spacer(1, 6))
+
+    story.append(Paragraph("High-Signal Pages", h2))
+    bullets = []
+    for p in pages:
+        if p.get("summary"):
+            bullets.append(ListItem(Paragraph(f"<b>{p.get('url','')}</b> — {p['summary']}", body), leftIndent=10))
+        if len(bullets) >= 5:
+            break
+    if bullets:
+        story.append(ListFlowable(bullets, bulletType='bullet', leftIndent=14))
+    else:
+        story.append(Paragraph("No page summaries available.", body))
+
+    story.append(Spacer(1, 12))
+    story.append(Paragraph("Generated by your Sales Research Copilot • Sources: pages listed above", muted))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
+
+# --- PDF route (new) ---
+@app.post("/scrape_pdf")
+async def scrape_pdf(request: Request):
+    """
+    Same request body as /scrape (url/crawl/max_pages/max_depth/question).
+    Returns a PDF (application/pdf) as an attachment.
+    """
+    body = await request.json()
+    payload = await _process_scrape_body(body)
+    pdf_bytes = _build_pdf_from_payload(payload)
+
+    domain = (payload.get("domain") or "company").replace("/", "_")
+    filename = f"Company_Profile_{domain}.pdf"
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
