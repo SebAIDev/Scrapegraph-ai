@@ -6,7 +6,7 @@ import os
 import uvicorn
 
 # --- Crawl helpers ---
-import re, time, requests
+import re, time, requests, unicodedata
 from urllib.parse import urljoin, urlparse
 from collections import deque
 from bs4 import BeautifulSoup
@@ -88,6 +88,13 @@ def _fetch_page_text(url: str, timeout: int = 30) -> str:
     html = _decode_html_bytes(r.content, r.encoding)
     soup = BeautifulSoup(html, "lxml")
     return _sanitize_text(soup.get_text(" ", strip=True))
+
+# Convert any text to ASCII-safe (drops unrenderable glyphs)
+def _to_ascii(s: str) -> str:
+    if not s:
+        return ""
+    s = _sanitize_text(s)
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
 
 # ---------- URL helpers ----------
 def _same_domain(u: str, root: str) -> bool:
@@ -260,7 +267,8 @@ async def _process_scrape_body(body: dict) -> dict:
         return {"overview": {"summary": text}, "result": {"summary": text, "content": text},
                 "domain": urlparse(url).netloc,
                 "stats": {"pages_crawled": 1, "max_pages": max_pages, "max_depth": max_depth},
-                "pages": [{"url": url, "summary": text}]}
+                "pages": [{"url": url, "summary": text}],
+                "source_url": url}
 
     # Crawl path
     urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
@@ -280,6 +288,7 @@ async def _process_scrape_body(body: dict) -> dict:
 
     payload = {
         "domain": urlparse(url).netloc,
+        "source_url": url,
         "stats": {"pages_crawled": len(pages), "max_pages": max_pages, "max_depth": max_depth},
         "entities": {"emails": sorted(emails)},
         "pages": pages,
@@ -299,7 +308,7 @@ async def scrape(request: Request):
         text = f"Internal Server Error: {e}"
         return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
 
-# --- Build a clean PDF from the payload ---
+# --- Build a clean PDF from the payload (ASCII-safe) ---
 def _build_pdf_from_payload(payload: dict) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -312,15 +321,15 @@ def _build_pdf_from_payload(payload: dict) -> bytes:
     body = ParagraphStyle('body', parent=styles['BodyText'], fontSize=10.5, leading=14)
     muted = ParagraphStyle('muted', parent=styles['BodyText'], fontSize=9, textColor='#666')
 
-    domain = payload.get("domain","")
+    domain = _to_ascii(payload.get("domain",""))
     stats = payload.get("stats",{})
     pages = payload.get("pages",[])
-    overview = (payload.get("overview") or {}).get("summary","")
-    result = (payload.get("result") or {}).get("summary","")
+    overview = _to_ascii((payload.get("overview") or {}).get("summary",""))
+    result = _to_ascii((payload.get("result") or {}).get("summary",""))
 
     story = []
     story.append(Paragraph(f"Company Profile: {domain}", h1))
-    chips = f"Pages crawled: {stats.get('pages_crawled',0)}  •  Depth: {stats.get('max_depth',0)}"
+    chips = _to_ascii(f"Pages crawled: {stats.get('pages_crawled',0)}  •  Depth: {stats.get('max_depth',0)}")
     story.append(Paragraph(chips, muted))
     story.append(Spacer(1, 6))
 
@@ -335,8 +344,14 @@ def _build_pdf_from_payload(payload: dict) -> bytes:
     story.append(Paragraph("High-Signal Pages", h2))
     bullets = []
     for p in pages:
-        if p.get("summary"):
-            bullets.append(ListItem(Paragraph(f"<b>{p.get('url','')}</b> — {p['summary']}", body), leftIndent=10))
+        ps = p.get("summary")
+        if ps:
+            bullets.append(
+                ListItem(
+                    Paragraph(f"<b>{_to_ascii(p.get('url',''))}</b> — {_to_ascii(ps)}", body),
+                    leftIndent=10
+                )
+            )
         if len(bullets) >= 5:
             break
     if bullets:
