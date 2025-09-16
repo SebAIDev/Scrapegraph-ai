@@ -67,17 +67,14 @@ def _sanitize_text(s: str) -> str:
     return " ".join(s.split())
 
 def _decode_html_bytes(raw: bytes, declared: str | None) -> str:
-    # Prefer server-declared encoding if valid
     if declared:
         try:
             return raw.decode(declared, errors="strict")
         except UnicodeDecodeError:
             pass
-    # Detect best encoding (handles cp1252/latin-1, etc.)
     guess = from_bytes(raw).best()
     if guess:
         return str(guess)
-    # Fallbacks
     try:
         return raw.decode("utf-8", errors="replace")
     except Exception:
@@ -95,6 +92,32 @@ def _to_ascii(s: str) -> str:
         return ""
     s = _sanitize_text(s)
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+
+# Escape characters that Paragraph’s mini-HTML would parse
+def _xml_escape(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+# Split long text into safe chunks (<= max_chunk), preferring sentence/para breaks
+def _chunk_text(s: str, max_chunk: int = 1600):
+    s = _to_ascii(s).replace("\r", "")
+    # break on double newlines first
+    paras = re.split(r"\n{2,}", s)
+    for p in paras:
+        p = p.strip()
+        if not p:
+            continue
+        while len(p) > max_chunk:
+            # try to split at a sentence end within window
+            window = p[:max_chunk]
+            cut = max(window.rfind(". "), window.rfind("? "), window.rfind("! "), window.rfind("; "))
+            if cut < max_chunk * 0.5:  # no good sentence break; split on last space
+                cut = window.rfind(" ")
+            if cut <= 0:
+                cut = max_chunk
+            yield p[:cut+1].strip()
+            p = p[cut+1:].strip()
+        if p:
+            yield p
 
 # ---------- URL helpers ----------
 def _same_domain(u: str, root: str) -> bool:
@@ -127,7 +150,6 @@ def discover_urls(
     delay: float = 0.5,
     max_runtime_sec: int = 240
 ):
-    """Polite same-domain crawl with sitemap seeding, priority pages, and a hard 4-min cap."""
     began = time.time()
     found, seen = [], set()
     q = deque()
@@ -165,7 +187,7 @@ def discover_urls(
             resp = requests.get(url, timeout=10, headers={"User-Agent": "CoPilotBot/1.0"})
             if "text/html" not in resp.headers.get("Content-Type", ""):
                 continue
-            html = _decode_html_bytes(resp.content, resp.encoding)  # robust decode
+            html = _decode_html_bytes(resp.content, resp.encoding)
             soup = BeautifulSoup(html, "lxml")
             for a in soup.select("a[href]"):
                 href = urljoin(url, a.get("href"))
@@ -191,14 +213,10 @@ def read_root():
 
 # === SmartScraper with resilient fallback ===
 def run_smart_scraper(url: str, question: str, page_mode: bool = False):
-    """
-    Try SmartScraperGraph first (uses Playwright).
-    If it raises (decode error / page crash), fall back to requests+BS4 text and summarize via OpenAI.
-    """
     config = {
         "llm": {
             "api_key": os.environ.get("OPENAI_API_KEY"),
-            "model": "gpt-3.5-turbo",  # consider "gpt-4o-mini" for better quality/similar speed
+            "model": "gpt-3.5-turbo",
             "temperature": 0,
         },
         "graph_config": {"browser_args": [
@@ -208,8 +226,6 @@ def run_smart_scraper(url: str, question: str, page_mode: bool = False):
         "verbose": True,
     }
     prompt = PER_PAGE_PROMPT if page_mode else question
-
-    # 1) Try SmartScraperGraph
     try:
         graph = SmartScraperGraph(prompt=prompt, source=url, config=config)
         out = graph.run()
@@ -219,9 +235,8 @@ def run_smart_scraper(url: str, question: str, page_mode: bool = False):
         else:
             return {"summary": str(out).strip()}
     except Exception as e:
-        # 2) Fallback: manual fetch + local LLM summarization (avoids UTF-8 & Playwright crashes)
         try:
-            text = _fetch_page_text(url)[:12000]  # cap for speed
+            text = _fetch_page_text(url)[:12000]
             fallback_prompt = (
                 f"Use only the following text from {url} to answer.\n\n"
                 f"TEXT:\n{text}\n\nQUESTION:\n{prompt}"
@@ -235,7 +250,6 @@ def _truncate(text: str, max_chars: int = 12000) -> str:
     return (text or "")[:max_chars]
 
 def build_overview_with_llm(pages: list, model: str, user_question: str) -> str:
-    """Aggregate per-page summaries into one polished output using YOUR sales prompt."""
     items = [p for p in pages if p.get("summary")][:20]
     combined = "\n\n".join(
         f"Page: {p.get('url','')}\nSummary: {p.get('summary','')}" for p in items
@@ -270,11 +284,10 @@ async def _process_scrape_body(body: dict) -> dict:
                 "pages": [{"url": url, "summary": text}],
                 "source_url": url}
 
-    # Crawl path
     urls = discover_urls(url, max_pages=max_pages, max_depth=max_depth, max_runtime_sec=240)
     pages, emails = [], set()
     for u in urls:
-        page = await run_in_threadpool(run_smart_scraper, u, question, True)  # page_mode=True
+        page = await run_in_threadpool(run_smart_scraper, u, question, True)
         page["url"] = u
         pages.append(page)
         for e in page.get("emails", []):
@@ -308,7 +321,7 @@ async def scrape(request: Request):
         text = f"Internal Server Error: {e}"
         return {"overview": {"summary": text}, "result": {"summary": text, "content": text}}
 
-# --- Build a clean PDF from the payload (ASCII-safe) ---
+# --- Build a clean PDF from the payload (ASCII + chunked) ---
 def _build_pdf_from_payload(payload: dict) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -324,34 +337,41 @@ def _build_pdf_from_payload(payload: dict) -> bytes:
     domain = _to_ascii(payload.get("domain",""))
     stats = payload.get("stats",{})
     pages = payload.get("pages",[])
-    overview = _to_ascii((payload.get("overview") or {}).get("summary",""))
-    result = _to_ascii((payload.get("result") or {}).get("summary",""))
+    overview = (payload.get("overview") or {}).get("summary","")
+    result = (payload.get("result") or {}).get("summary","")
 
     story = []
-    story.append(Paragraph(f"Company Profile: {domain}", h1))
+    story.append(Paragraph(f"Company Profile: {_xml_escape(domain)}", h1))
     chips = _to_ascii(f"Pages crawled: {stats.get('pages_crawled',0)}  •  Depth: {stats.get('max_depth',0)}")
-    story.append(Paragraph(chips, muted))
+    story.append(Paragraph(_xml_escape(chips), muted))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Executive Summary", h2))
-    story.append(Paragraph(overview.replace("\n","<br/>"), body))
-    story.append(Spacer(1, 6))
+    # Safe add of long sections
+    def add_block(title: str, text: str):
+        story.append(Paragraph(_xml_escape(title), h2))
+        count = 0
+        for chunk in _chunk_text(text, max_chunk=1600):
+            story.append(Paragraph(_xml_escape(chunk), body))
+            count += 1
+            if count >= 10:  # hard cap to avoid extreme outputs
+                break
+        story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Detailed Sales Brief", h2))
-    story.append(Paragraph(result.replace("\n","<br/>"), body))
-    story.append(Spacer(1, 6))
+    add_block("Executive Summary", overview)
+    add_block("Detailed Sales Brief", result)
 
+    # High-signal pages (truncate each bullet safely)
     story.append(Paragraph("High-Signal Pages", h2))
     bullets = []
     for p in pages:
         ps = p.get("summary")
-        if ps:
-            bullets.append(
-                ListItem(
-                    Paragraph(f"<b>{_to_ascii(p.get('url',''))}</b> — {_to_ascii(ps)}", body),
-                    leftIndent=10
-                )
-            )
+        if not ps:
+            continue
+        url = _to_ascii(p.get("url",""))
+        text = _to_ascii(ps)
+        if len(text) > 350:
+            text = text[:350].rsplit(" ", 1)[0] + " ..."
+        bullets.append(ListItem(Paragraph(f"<b>{_xml_escape(url)}</b> — {_xml_escape(text)}", body), leftIndent=10))
         if len(bullets) >= 5:
             break
     if bullets:
@@ -366,7 +386,7 @@ def _build_pdf_from_payload(payload: dict) -> bytes:
     buf.seek(0)
     return buf.read()
 
-# --- PDF route (new) ---
+# --- PDF route ---
 @app.post("/scrape_pdf")
 async def scrape_pdf(request: Request):
     """
